@@ -1,2 +1,4 @@
 *.o
 aws
+static/*
+dynamic/*
