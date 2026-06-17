@@ -1,0 +1,67 @@
+name: CI Build
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential libaio-dev valgrind wrk curl
+
+    - name: Compile the Server
+      run: make
+
+    - name: Prepare Test Files
+      run: |
+        mkdir -p tests
+        echo "This is a static test file for CI/CD pipeline validation." > tests/static.html
+        echo "This is a dynamic test file for CI/CD pipeline validation." > tests/dynamic.html
+
+    - name: Valgrind Memory Leak Test
+      run: |
+        # start server in the background with Valgrind
+        # --error-exitcode=1 forces the pipeline to fail if a leak is found
+        valgrind --leak-check=full --show-leak-kinds=all --error-exitcode=1 ./aws &
+        SERVER_PID=$!
+        
+        sleep 2 
+        
+        # curl request to trigger the connection and file-reading logic
+        curl -s http://127.0.0.1:8888/tests/static.html > /dev/null
+
+        curl -s http://127.0.0.1:8888/tests/dynamic.html > /dev/null
+
+        curl -s http://127.0.0.1:8888/tests/not_found.html > /dev/null
+        
+        # send SIGINT to trigger shutdown
+        kill -SIGINT $SERVER_PID
+        
+        # wait for server to exit and capture valgrind exit code
+        wait $SERVER_PID
+
+    - name: wrk Performance & Stability Test
+      run: |
+        # start the server
+        ./aws &
+        SERVER_PID=$!
+
+        sleep 2
+        
+        # run a short wrk test (5 seconds) to ensure it doesn't crash under load
+        echo "Running wrk benchmark..."
+        wrk -t2 -c50 -d5s http://127.0.0.1:8888/tests/static.html
+        
+        # shut down
+        kill -SIGINT $SERVER_PID
+        wait $SERVER_PID
