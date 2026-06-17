@@ -16,12 +16,16 @@
 #include <sys/eventfd.h>
 #include <libaio.h>
 #include <errno.h>
+#include <signal.h>
 
 #include "aws.h"
 #include "utils/util.h"
 #include "utils/debug.h"
 #include "utils/sock_util.h"
 #include "utils/w_epoll.h"
+
+#define MAX_CONNECTIONS 1024
+static struct connection *active_connections[MAX_CONNECTIONS] = {NULL};
 
 /* server socket file descriptor */
 static int listenfd;
@@ -31,6 +35,15 @@ static int epollfd;
 
 // static io_context_t ctx;
 
+/* global flag to keep the server running */
+static volatile sig_atomic_t server_running = 1;
+
+/* signal handler for Ctrl+C */
+static void handle_sigint(int signum)
+{
+	(void)signum; // Suppress unused warning
+	server_running = 0;
+}
 
 static int aws_on_path_cb(http_parser *p, const char *buf, size_t len)
 {
@@ -45,23 +58,38 @@ static int aws_on_path_cb(http_parser *p, const char *buf, size_t len)
 	return 0;
 }
 
-
 // Prepares the connection buffer to send the reply header.
 static void connection_prepare_send_reply_header(struct connection *conn)
 {
 	conn->state = STATE_SENDING_HEADER;
-	char *header = HTTP_FOUND_MSG;
-
-	size_t len = strlen(header);
-
-	if (len >= sizeof(conn->send_buffer))
-		len = sizeof(conn->send_buffer) - 1;
-
-	memcpy(conn->send_buffer, header, len);
-	conn->send_buffer[len] = '\0';
+	
+	/* build the header to include file size and connection status */
+	sprintf(conn->send_buffer, 
+		"HTTP/1.1 200 OK\r\n"
+		"Content-Length: %ld\r\n"
+		"Connection: keep-alive\r\n"
+		"\r\n", 
+		conn->file_size);
 
 	conn->send_len = strlen(conn->send_buffer);
 }
+
+// Prepares the connection buffer to send the reply header.
+// static void connection_prepare_send_reply_header(struct connection *conn)
+// {
+// 	conn->state = STATE_SENDING_HEADER;
+// 	char *header = HTTP_FOUND_MSG;
+
+// 	size_t len = strlen(header);
+
+// 	if (len >= sizeof(conn->send_buffer))
+// 		len = sizeof(conn->send_buffer) - 1;
+
+// 	memcpy(conn->send_buffer, header, len);
+// 	conn->send_buffer[len] = '\0';
+
+// 	conn->send_len = strlen(conn->send_buffer);
+// }
 
 
 // Prepares the connection buffer to send the 404 header.
@@ -147,6 +175,10 @@ void connection_start_async_io(struct connection *conn)
 // Removes connection handler.
 void connection_remove(struct connection *conn)
 {
+	if (conn->sockfd < MAX_CONNECTIONS) {
+		active_connections[conn->sockfd] = NULL;
+	}
+
 	shutdown(conn->sockfd, SHUT_RDWR);
 
 	if (conn->sockfd)
@@ -185,6 +217,10 @@ void handle_new_connection(void)
 
 	// add socket to epoll
 	w_epoll_add_ptr_in(epollfd, socketfd, (void *)conn);
+
+	if (socketfd < MAX_CONNECTIONS) {
+		active_connections[socketfd] = conn;
+	}
 
 	// initialize HTTP_REQUEST parser
 	http_parser_init(&conn->request_parser, HTTP_REQUEST);
@@ -351,13 +387,25 @@ enum connection_state connection_send_static(struct connection *conn)
 	}
 
 	if (conn->file_pos == conn->file_size) {
-		conn->state = STATE_DATA_SENT;
-
+		// reset connecton once file is done sending
 		rc = close(conn->fd);
 		DIE(rc < 0, "cannot close fd conn_send_static");
 
-		connection_remove(conn);
-		return STATE_CONNECTION_CLOSED;
+		/* reset the cursors */
+		conn->state = STATE_INITIAL;
+		conn->recv_len = 0;
+		conn->send_pos = 0;
+		conn->send_len = 0;
+		conn->file_pos = 0;
+		
+		/* Clear the buffers*/
+		memset(conn->recv_buffer, 0, BUFSIZ);
+		memset(conn->send_buffer, 0, BUFSIZ);
+
+		/* Tell epoll to switch back to listening for a new HTTP request on this same socket */
+		w_epoll_update_ptr_in(epollfd, conn->sockfd, conn);
+		
+		return STATE_INITIAL;
 	}
 
 	return conn->state;
@@ -568,6 +616,12 @@ int main(void)
 {
 	int rc;
 
+	/* register the signal handler */
+	struct sigaction sa;
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = handle_sigint;
+	sigaction(SIGINT, &sa, NULL);
+
 	// the w_epoll_create function from the provided w_epoll.h uses the deprecated
 	// epoll_create function:
 	// "Since Linux 2.6.8, the size argument (of epoll_create) is ignored" - the man page
@@ -587,12 +641,20 @@ int main(void)
 	dlog(LOG_INFO, "Server waiting for connections on port %d\n", AWS_LISTEN_PORT);
 
 	/* server main loop */
-	while (1) {
+	while (server_running) {
 		struct epoll_event rev;
 
 		// wait for events
 		rc = epoll_wait(epollfd, &rev, 1, EPOLL_TIMEOUT_INFINITE);
-		DIE(rc < 0, "epoll_wait failed");
+
+		/* Check if epoll_wait was interrupted by Ctrl+C signal */
+		if (rc < 0) {
+			if (errno == EINTR) {
+				dlog(LOG_INFO, "Server shutting down\n");
+				break; 
+			}
+			DIE(rc < 0, "epoll_wait failed");
+		}
 
 		dlog(LOG_INFO, "Server has a new event of type");
 		// we can either have a request for a new connection
@@ -614,6 +676,13 @@ int main(void)
 
 	rc = close(listenfd);
 	DIE(rc < 0, "listenfd close failed");
+
+	for (int i = 0; i < MAX_CONNECTIONS; i++) {
+		if (active_connections[i] != NULL) {
+			dlog(LOG_INFO, "Cleaning up dangling connection on fd %d\n", i);
+			connection_remove(active_connections[i]);
+		}
+	}
 
 	return 0;
 }
