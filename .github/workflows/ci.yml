@@ -1,10 +1,14 @@
-name: CI Build
+name: CI/CD Build and Deploy
 
 on:
   push:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
   build-and-test:
@@ -58,10 +62,38 @@ jobs:
 
         sleep 2
         
-        # run a short wrk test (5 seconds) to ensure it doesn't crash under load
+        # run a short wrk test to ensure it doesn't crash
         echo "Running wrk benchmark..."
         wrk -t2 -c50 -d5s http://127.0.0.1:8888/tests/static.html
         
         # shut down
         kill -SIGINT $SERVER_PID
         wait $SERVER_PID
+  
+  deploy-docker:
+    runs-on: ubuntu-latest
+    # only run if previous job succeeds
+    needs: build-and-test
+    # only run on push/merge to main
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Log in to GitHub Container Registry
+      run: |
+        echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+    - name: Build and Push Docker Image
+      run: |
+        # Sanitize name to lowercase to prevent Docker naming crashes
+        REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+        REPO_NAME=$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]')
+        
+        IMAGE_NAME="ghcr.io/$REPO_OWNER/$REPO_NAME"
+        
+        # build
+        docker build -t $IMAGE_NAME:latest .
+        # push
+        docker push $IMAGE_NAME:latest

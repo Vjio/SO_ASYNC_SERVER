@@ -1,0 +1,7 @@
+.git
+.github
+*.o
+aws
+tests/
+static/
+dynamic/
