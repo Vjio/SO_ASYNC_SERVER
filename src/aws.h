@@ -16,7 +16,12 @@ extern "C" {
 #define AWS_ABS_STATIC_FOLDER	(AWS_DOCUMENT_ROOT AWS_REL_STATIC_FOLDER)
 #define AWS_ABS_DYNAMIC_FOLDER	(AWS_DOCUMENT_ROOT AWS_REL_DYNAMIC_FOLDER)
 // http responses
-#define HTTP_NOT_FOUND_MSG "HTTP/1.0 404 Not Found\r\n\r\n"
+const char *HTTP_NOT_FOUND_MSG = 
+        "HTTP/1.1 404 Not Found\r\n"
+        "Content-Length: 13\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+        "404 Not Found";
 #define HTTP_FOUND_MSG "HTTP/1.0 200 OK\r\n\r\n"
 
 enum connection_state {

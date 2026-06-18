@@ -95,9 +95,10 @@ static void connection_prepare_send_reply_header(struct connection *conn)
 // Prepares the connection buffer to send the 404 header.
 static void connection_prepare_send_404(struct connection *conn)
 {
-	conn->state = STATE_SENDING_404;
 	strcpy(conn->send_buffer, HTTP_NOT_FOUND_MSG);
-	conn->send_len = strlen(conn->send_buffer);
+	conn->send_len = strlen(HTTP_NOT_FOUND_MSG);
+	conn->send_pos = 0;
+	conn->state = STATE_SENDING_404;
 }
 
 
@@ -185,9 +186,9 @@ void connection_remove(struct connection *conn)
 		close(conn->sockfd);
 	if (conn->ctx)
 		io_destroy(conn->ctx);
-	if (conn->eventfd)
+	if (conn->eventfd > 0)
 		close(conn->eventfd);
-	if (conn->fd)
+	if (conn->fd > 0)
 		close(conn->fd);
 
 	conn->state = STATE_CONNECTION_CLOSED;
@@ -506,8 +507,10 @@ void handle_output(struct connection *conn)
 		rc = connection_open_file(conn);
 
 		// check if file found
-		if (rc < 0)
+		if (rc < 0) {
+			dlog(LOG_INFO, "File not found: %s\n", conn->filename);
 			connection_prepare_send_404(conn);
+		}
 		else
 			connection_prepare_send_reply_header(conn);
 
