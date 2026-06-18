@@ -33,10 +33,30 @@ Transfer/sec:    576.59MB
 
 Currently bottlenecked by the fact that the server does not keep any files in a cache, thus leading to more costly I/O syscalls.
 
-## Building and Running
+## Running with Docker
+
+The easiest way to run this server is via the pre-built Docker container hosten on GitHub Container Registry.
+
+```bash
+docker run -p 8888:8888 ghcr.io/vjio/so_async_server:latest
+```
+
+## Building from source
+
+Will only work on a Linux environment!
 
 ### Prerequisites
 GCC/Clang and libaio-dev
 
 ### Compilation
 Simply run 'make' and then execute ./aws
+
+## Testing
+
+The docker image comes with a file you can curl for testing
+
+```bash
+curl http://127.0.0.1:8888/static/index.html
+```
+
+You can change the dockerfile to add heftier files to test with. Or compile the server on your own machine and curl some of you local files.
