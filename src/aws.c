@@ -648,7 +648,9 @@ int main(void)
 		struct epoll_event rev;
 
 		// wait for events
-		rc = epoll_wait(epollfd, &rev, 1, EPOLL_TIMEOUT_INFINITE);
+		rc = epoll_wait(epollfd, &rev, 1, 1000);
+		if (rc == 0)
+    		continue;
 
 		/* Check if epoll_wait was interrupted by Ctrl+C signal */
 		if (rc < 0) {
